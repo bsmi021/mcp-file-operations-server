@@ -7,7 +7,6 @@ A Model Context Protocol (MCP) server that provides enhanced file operation capa
 - **Basic File Operations**: Copy, read, write, move, and delete files
 - **Directory Operations**: Create, remove, and copy directories
 - **File Watching**: Monitor files and directories for changes
-- **Patch Operations**: Apply patches to files with various strategies
 - **Change Tracking**: Track and query file operation history
 - **Streaming Support**: Handle large files efficiently with streaming
 - **Resource Support**: Access files and directories through MCP resources

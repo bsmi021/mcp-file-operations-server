@@ -1,3 +1,7 @@
+// Node.js built-ins
+import { Buffer } from 'node:buffer';
+
+// MCP SDK imports
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -10,6 +14,23 @@ import {
     McpError
 } from '@modelcontextprotocol/sdk/types.js';
 
+// Local service implementations
+import { FileServiceImpl } from './services/FileService.js';
+import { DirectoryServiceImpl } from './services/DirectoryService.js';
+import { WatchServiceImpl } from './services/WatchService.js';
+import { ChangeTrackingServiceImpl } from './services/ChangeTrackingService.js';
+import { RateLimiterService } from './services/RateLimiterService.js';
+
+// Local types and constants
+import {
+    FileOperationError,
+    ChangeType,
+    FileMetadata,
+    Change,
+    ValidationResult
+} from './types/index.js';
+import { FILE_OPERATION_DEFAULTS } from './config/defaults.js';
+
 // Progress tracking types
 type ProgressToken = string | number;
 interface ProgressNotification {
@@ -20,32 +41,12 @@ interface ProgressNotification {
         percentage: number;
     };
 }
-import { Buffer } from 'node:buffer';
 type BufferEncoding = Parameters<typeof Buffer.from>[1];
-
-import { FileServiceImpl } from './services/FileService.js';
-import { DirectoryServiceImpl } from './services/DirectoryService.js';
-import { WatchServiceImpl } from './services/WatchService.js';
-import { ChangeTrackingServiceImpl } from './services/ChangeTrackingService.js';
-import { RateLimiterService } from './services/RateLimiterService.js';
-import {
-    FileOperationError,
-    ChangeType,
-    FileMetadata,
-    Change,
-    ValidationResult
-} from './types/index.js';
-import { FILE_OPERATION_DEFAULTS } from './config/defaults.js';
 
 type ToolResponse = {
     result: Record<string, unknown> | FileMetadata | string | Change[] | ValidationResult;
     progressToken?: ProgressToken;
 };
-
-interface ProgressUpdate {
-    message: string;
-    percentage: number;
-}
 
 /**
  * Progress tracking helper class
@@ -56,7 +57,7 @@ class ProgressTracker {
     private total: number;
     private current: number = 0;
 
-    constructor(server: Server, total: number, description: string) {
+    constructor(server: Server, total: number) {
         this.server = server;
         this.total = total;
         // Generate a random token ID
@@ -94,15 +95,6 @@ function ensureBoolean(value: unknown, defaultValue: boolean): boolean {
     return typeof value === 'boolean' ? value : defaultValue;
 }
 
-/**
- * Main server class coordinating all file operation services
- * Follows SOLID principles:
- * - Single Responsibility: Coordinates services and handles MCP communication
- * - Open/Closed: Extensible through service implementations
- * - Liskov Substitution: Services follow their interfaces
- * - Interface Segregation: Each service has focused responsibilities
- * - Dependency Inversion: Depends on service abstractions
- */
 /**
  * Validate path to prevent directory traversal
  */
@@ -442,8 +434,7 @@ export class FileOperationsServer {
                     // Create progress tracker
                     const progress = new ProgressTracker(
                         this.server,
-                        totalFiles,
-                        `Copying directory ${source} to ${destination}`
+                        totalFiles
                     );
 
                     // Copy with progress updates
@@ -452,10 +443,10 @@ export class FileOperationsServer {
 
                     // Update progress after each file
                     const files = await this.directoryService.list(destination, true);
-                    files.forEach(async (file) => {
+                    for (let i = 0; i < files.length; i++) {
                         copied++;
-                        await progress.update(1, `Copying ${file}`);
-                    });
+                        await progress.update(1, `Copying directory ${source} to ${destination} (${copied}/${totalFiles})`);
+                    }
 
                     await trackChange('Copied directory', 'directory_copy', { source, destination });
                     return {
@@ -506,7 +497,14 @@ export class FileOperationsServer {
                     );
             }
         } catch (error) {
-            if (error instanceof FileOperationError) throw error;
+            // Convert all errors to MCP errors for consistent handling
+            if (error instanceof FileOperationError) {
+                throw new McpError(
+                    ErrorCode.InvalidRequest,
+                    error.message,
+                    { code: error.code }
+                );
+            }
             throw new McpError(
                 ErrorCode.InternalError,
                 `Operation failed: ${error instanceof Error ? error.message : 'Unknown error'}`
