@@ -4,49 +4,94 @@ import {
     CallToolRequestSchema,
     ErrorCode,
     ListToolsRequestSchema,
+    ListResourcesRequestSchema,
+    ListResourceTemplatesRequestSchema,
+    ReadResourceRequestSchema,
     McpError
 } from '@modelcontextprotocol/sdk/types.js';
+
+// Progress tracking types
+type ProgressToken = string | number;
+interface ProgressNotification {
+    method: 'progress/update';
+    params: {
+        token: ProgressToken;
+        message: string;
+        percentage: number;
+    };
+}
 import { Buffer } from 'node:buffer';
 type BufferEncoding = Parameters<typeof Buffer.from>[1];
 
 import { FileServiceImpl } from './services/FileService.js';
 import { DirectoryServiceImpl } from './services/DirectoryService.js';
 import { WatchServiceImpl } from './services/WatchService.js';
-import { PatchServiceImpl } from './services/PatchService.js';
 import { ChangeTrackingServiceImpl } from './services/ChangeTrackingService.js';
-import { StreamProcessorImpl } from './services/StreamProcessor.js';
+import { RateLimiterService } from './services/RateLimiterService.js';
 import {
     FileOperationError,
     ChangeType,
     FileMetadata,
-    PatchOperation,
-    PatchResult,
     Change,
-    ValidationResult,
-    BatchConfig
+    ValidationResult
 } from './types/index.js';
 import { FILE_OPERATION_DEFAULTS } from './config/defaults.js';
 
-type ToolResponse = Record<string, unknown> | FileMetadata | string | PatchResult | Change[] | ValidationResult;
+type ToolResponse = {
+    result: Record<string, unknown> | FileMetadata | string | Change[] | ValidationResult;
+    progressToken?: ProgressToken;
+};
 
-// Helper functions to ensure specific boolean literals
-function ensureFalse(_value: unknown): false {
-    // Use parameter in a no-op way to satisfy TypeScript
-    void _value;
-    return false;
+interface ProgressUpdate {
+    message: string;
+    percentage: number;
 }
 
-function ensureTrue(_value: unknown): true {
-    // Use parameter in a no-op way to satisfy TypeScript
-    void _value;
-    return true;
-}
+/**
+ * Progress tracking helper class
+ */
+class ProgressTracker {
+    private token: ProgressToken;
+    private server: Server;
+    private total: number;
+    private current: number = 0;
 
-function ensureBoolean(value: unknown, defaultValue: boolean): boolean {
-    if (typeof value === 'boolean') {
-        return value;
+    constructor(server: Server, total: number, description: string) {
+        this.server = server;
+        this.total = total;
+        // Generate a random token ID
+        this.token = Math.random().toString(36).substring(2);
     }
-    return defaultValue;
+
+    public getToken(): ProgressToken {
+        return this.token;
+    }
+
+    public async update(increment: number, message: string): Promise<void> {
+        this.current += increment;
+        const percentage = Math.min(Math.round((this.current / this.total) * 100), 100);
+
+        const notification: ProgressNotification = {
+            method: 'progress/update',
+            params: {
+                token: this.token,
+                message,
+                percentage
+            }
+        };
+
+        await this.server.notification(notification);
+    }
+}
+
+/**
+ * Helper function to ensure boolean values with defaults
+ * @param value Value to check
+ * @param defaultValue Default value if not boolean
+ * @returns Validated boolean value
+ */
+function ensureBoolean(value: unknown, defaultValue: boolean): boolean {
+    return typeof value === 'boolean' ? value : defaultValue;
 }
 
 /**
@@ -58,14 +103,26 @@ function ensureBoolean(value: unknown, defaultValue: boolean): boolean {
  * - Interface Segregation: Each service has focused responsibilities
  * - Dependency Inversion: Depends on service abstractions
  */
+/**
+ * Validate path to prevent directory traversal
+ */
+function validatePath(path: string): void {
+    const normalized = path.replace(/\\/g, '/');
+    if (normalized.includes('../') || normalized.includes('..\\')) {
+        throw new McpError(
+            ErrorCode.InvalidParams,
+            'Path traversal is not allowed'
+        );
+    }
+}
+
 export class FileOperationsServer {
     private server: Server;
     private fileService: FileServiceImpl;
     private directoryService: DirectoryServiceImpl;
     private watchService: WatchServiceImpl;
-    private patchService: PatchServiceImpl;
     private changeTrackingService: ChangeTrackingServiceImpl;
-    private streamProcessor: StreamProcessorImpl;
+    private rateLimiter: RateLimiterService;
 
     constructor() {
         // Initialize server
@@ -77,6 +134,7 @@ export class FileOperationsServer {
             {
                 capabilities: {
                     tools: {},
+                    resources: {}
                 },
             }
         );
@@ -85,12 +143,12 @@ export class FileOperationsServer {
         this.fileService = new FileServiceImpl();
         this.directoryService = new DirectoryServiceImpl();
         this.watchService = new WatchServiceImpl();
-        this.patchService = new PatchServiceImpl();
         this.changeTrackingService = new ChangeTrackingServiceImpl();
-        this.streamProcessor = new StreamProcessorImpl();
+        this.rateLimiter = new RateLimiterService();
 
         // Set up request handlers
         this.setupRequestHandlers();
+        this.setupResourceHandlers();
 
         // Error handling
         this.server.onerror = (error): void => console.error('[MCP Error]', error);
@@ -231,26 +289,6 @@ export class FileOperationsServer {
                         required: ['path']
                     }
                 },
-                // Patch Operations
-                {
-                    name: 'apply_patch',
-                    description: 'Apply a patch operation to a file',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            operation: {
-                                type: 'object',
-                                description: 'Patch operation details',
-                                properties: {
-                                    type: { type: 'string', enum: ['line', 'block', 'diff', 'complete'], description: 'Type of patch operation' },
-                                    filePath: { type: 'string', description: 'Path to the file to patch' }
-                                },
-                                required: ['type', 'filePath']
-                            }
-                        },
-                        required: ['operation']
-                    }
-                },
                 // Change Tracking Operations
                 {
                     name: 'get_changes',
@@ -270,55 +308,6 @@ export class FileOperationsServer {
                         type: 'object',
                         properties: {}
                     }
-                },
-                {
-                    name: 'process_file_stream',
-                    description: 'Process a large file in chunks with progress tracking',
-                    inputSchema: {
-                        type: 'object',
-                        properties: {
-                            filePath: {
-                                type: 'string',
-                                description: 'Path to the file to process'
-                            },
-                            processor: {
-                                type: 'string',
-                                description: 'JavaScript function as string to process each chunk',
-                                examples: ['(chunk) => chunk.toUpperCase()']
-                            },
-                            batchConfig: {
-                                type: 'object',
-                                description: 'Configuration for batch processing',
-                                properties: {
-                                    maxChunkSize: {
-                                        type: 'number',
-                                        description: 'Maximum size of each chunk in bytes'
-                                    },
-                                    maxLinesPerChunk: {
-                                        type: 'number',
-                                        description: 'Maximum number of lines per chunk (must be 1000)',
-                                        enum: [1000]
-                                    },
-                                    parallel: {
-                                        type: 'boolean',
-                                        description: 'Whether to process chunks in parallel (must be false)',
-                                        enum: [false]
-                                    },
-                                    maxParallelOps: {
-                                        type: 'number',
-                                        description: 'Maximum parallel operations (must be 4)',
-                                        enum: [4]
-                                    },
-                                    chunkDelay: {
-                                        type: 'number',
-                                        description: 'Delay between chunks in milliseconds (must be 100)',
-                                        enum: [100]
-                                    }
-                                }
-                            }
-                        },
-                        required: ['filePath', 'processor']
-                    }
                 }
             ],
         }));
@@ -329,6 +318,9 @@ export class FileOperationsServer {
             isError?: boolean;
         }> => {
             try {
+                // Check rate limit before processing tool request
+                this.rateLimiter.checkRateLimit('tool');
+
                 const result = await this.handleToolCall(
                     request.params.name,
                     request.params.arguments as Record<string, unknown>
@@ -376,6 +368,11 @@ export class FileOperationsServer {
         };
 
         try {
+            // Additional rate limit check for watch operations
+            if (toolName.includes('watch')) {
+                this.rateLimiter.checkRateLimit('watch');
+            }
+
             switch (toolName) {
                 // File Operations
                 case 'copy_file': {
@@ -384,13 +381,15 @@ export class FileOperationsServer {
                     const overwrite = ensureBoolean(args.overwrite, FILE_OPERATION_DEFAULTS.overwrite) as false;
                     await this.fileService.copyFile(source, destination, overwrite);
                     await trackChange('Copied file', 'file_create', { source, destination });
-                    return await this.fileService.getMetadata(destination);
+                    const metadata = await this.fileService.getMetadata(destination);
+                    return { result: metadata };
                 }
 
                 case 'read_file': {
                     const path = args.path as string;
                     const encoding = args.encoding as BufferEncoding ?? FILE_OPERATION_DEFAULTS.encoding;
-                    return await this.fileService.readFile(path, encoding);
+                    const content = await this.fileService.readFile(path, encoding);
+                    return { result: content };
                 }
 
                 case 'write_file': {
@@ -399,125 +398,105 @@ export class FileOperationsServer {
                     const encoding = args.encoding as BufferEncoding ?? FILE_OPERATION_DEFAULTS.encoding;
                     await this.fileService.writeFile(path, content, encoding);
                     await trackChange('Wrote file', 'file_edit', { path });
-                    return await this.fileService.getMetadata(path);
+                    const metadata = await this.fileService.getMetadata(path);
+                    return { result: metadata };
                 }
 
                 // Directory Operations
                 case 'make_directory': {
                     const path = args.path as string;
-                    const recursive = ensureTrue(args.recursive ?? FILE_OPERATION_DEFAULTS.recursive);
-                    await this.directoryService.create(path, recursive);
+                    const recursive = ensureBoolean(args.recursive, true);
+                    await this.directoryService.create(path, recursive as true);
                     await trackChange('Created directory', 'directory_create', { path });
-                    return { success: true, path };
+                    return { result: { success: true, path } };
                 }
 
                 case 'remove_directory': {
                     const path = args.path as string;
-                    const recursive = ensureFalse(args.recursive ?? false);
+                    const recursive = ensureBoolean(args.recursive, false);
                     await this.directoryService.remove(path, recursive);
                     await trackChange('Removed directory', 'directory_delete', { path });
-                    return { success: true, path };
+                    return { result: { success: true, path } };
                 }
 
                 case 'list_directory': {
                     const path = args.path as string;
                     const recursive = ensureBoolean(args.recursive, false);
                     const entries = await this.directoryService.list(path, recursive);
-                    return { success: true, entries };
+                    return { result: { success: true, entries } };
                 }
 
                 case 'copy_directory': {
                     const source = args.source as string;
                     const destination = args.destination as string;
-                    const overwrite = ensureFalse(args.overwrite ?? FILE_OPERATION_DEFAULTS.overwrite);
+                    const overwrite = ensureBoolean(args.overwrite, FILE_OPERATION_DEFAULTS.overwrite) as false;
+
+                    // Validate paths
+                    validatePath(source);
+                    validatePath(destination);
+
+                    // Count files for progress tracking
+                    const entries = await this.directoryService.list(source, true);
+                    const totalFiles = entries.length;
+
+                    // Create progress tracker
+                    const progress = new ProgressTracker(
+                        this.server,
+                        totalFiles,
+                        `Copying directory ${source} to ${destination}`
+                    );
+
+                    // Copy with progress updates
+                    let copied = 0;
                     await this.directoryService.copy(source, destination, overwrite);
+
+                    // Update progress after each file
+                    const files = await this.directoryService.list(destination, true);
+                    files.forEach(async (file) => {
+                        copied++;
+                        await progress.update(1, `Copying ${file}`);
+                    });
+
                     await trackChange('Copied directory', 'directory_copy', { source, destination });
-                    return { success: true, source, destination };
+                    return {
+                        result: { success: true, source, destination },
+                        progressToken: progress.getToken()
+                    };
                 }
 
                 // Watch Operations
                 case 'watch_directory': {
                     const path = args.path as string;
-                    const recursive = ensureTrue(args.recursive ?? false);
+                    const recursive = ensureBoolean(args.recursive, true) as true;
                     await this.watchService.watch(path, recursive);
                     await trackChange('Started watching', 'watch_start', { path });
-                    return { success: true, path };
+                    return { result: { success: true, path } };
                 }
 
                 case 'unwatch_directory': {
                     const path = args.path as string;
                     await this.watchService.unwatch(path);
                     await trackChange('Stopped watching', 'watch_end', { path });
-                    return { success: true, path };
+                    return { result: { success: true, path } };
                 }
 
                 case 'is_watching': {
                     const path = args.path as string;
                     const isWatching = this.watchService.isWatching(path);
-                    return { path, isWatching };
-                }
-
-                // Patch Operations
-                case 'apply_patch': {
-                    const operation = args.operation as PatchOperation;
-                    const patchResult = await this.patchService.applyPatch(operation);
-                    if (patchResult.success) {
-                        await trackChange('Applied patch', 'patch_apply', {
-                            path: operation.filePath,
-                            type: operation.type
-                        });
-                    }
-                    return patchResult;
+                    return { result: { path, isWatching } };
                 }
 
                 // Change Tracking Operations
                 case 'get_changes': {
                     const limit = args.limit as number | undefined;
                     const type = args.type as ChangeType | undefined;
-                    return await this.changeTrackingService.getChanges(limit, type);
+                    const changes = await this.changeTrackingService.getChanges(limit, type);
+                    return { result: changes };
                 }
 
                 case 'clear_changes': {
                     await this.changeTrackingService.clearChanges();
-                    return { success: true };
-                }
-
-                case 'process_file_stream': {
-                    const filePath = args.filePath as string;
-                    const processorStr = args.processor as string;
-                    const userConfig = args.batchConfig as Partial<BatchConfig> | undefined;
-
-                    // Create processor function from string
-                    const processor = new Function('chunk', 'chunkInfo', `return (${processorStr})(chunk, chunkInfo);`) as
-                        (chunk: string, chunkInfo: { start: number; end: number }) => Promise<string>;
-
-                    // Log warning if user provided config that doesn't match defaults
-                    if (userConfig && (
-                        userConfig.maxLinesPerChunk !== undefined && userConfig.maxLinesPerChunk !== 1000 ||
-                        userConfig.parallel !== undefined && userConfig.parallel !== false ||
-                        userConfig.maxParallelOps !== undefined && userConfig.maxParallelOps !== 4 ||
-                        userConfig.chunkDelay !== undefined && userConfig.chunkDelay !== 100
-                    )) {
-                        console.warn('User-provided batch config values must match defaults exactly. Using default configuration.');
-                    }
-
-                    const results = await this.streamProcessor.processFile(filePath, processor);
-                    await trackChange('Processed file stream', 'file_edit', {
-                        path: filePath,
-                        chunksProcessed: results.length,
-                        successful: results.filter(r => r.success).length
-                    });
-
-                    return {
-                        success: true,
-                        results,
-                        summary: {
-                            totalChunks: results.length,
-                            successfulChunks: results.filter(r => r.success).length,
-                            failedChunks: results.filter(r => !r.success).length,
-                            totalBytesProcessed: results.reduce((sum, r) => sum + r.bytesProcessed, 0)
-                        }
-                    };
+                    return { result: { success: true } };
                 }
 
                 default:
@@ -533,6 +512,110 @@ export class FileOperationsServer {
                 `Operation failed: ${error instanceof Error ? error.message : 'Unknown error'}`
             );
         }
+    }
+
+    /**
+     * Set up MCP resource handlers
+     */
+    private setupResourceHandlers(): void {
+        // List available resources
+        this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+            resources: [
+                {
+                    uri: 'file:///recent-changes',
+                    name: 'Recent File Changes',
+                    description: 'List of recent file system changes',
+                    mimeType: 'application/json'
+                }
+            ]
+        }));
+
+        // List resource templates
+        this.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+            resourceTemplates: [
+                {
+                    uriTemplate: 'file://{path}',
+                    name: 'File Contents',
+                    description: 'Contents of a file at the specified path'
+                },
+                {
+                    uriTemplate: 'metadata://{path}',
+                    name: 'File Metadata',
+                    description: 'Metadata for a file at the specified path',
+                    mimeType: 'application/json'
+                },
+                {
+                    uriTemplate: 'directory://{path}',
+                    name: 'Directory Contents',
+                    description: 'List of files in a directory',
+                    mimeType: 'application/json'
+                }
+            ]
+        }));
+
+        // Read resources
+        this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+            // Check rate limit before processing resource request
+            this.rateLimiter.checkRateLimit('resource');
+
+            const uri = request.params.uri;
+
+            // Handle static resources
+            if (uri === 'file:///recent-changes') {
+                const changes = await this.changeTrackingService.getChanges();
+                return {
+                    contents: [{
+                        uri,
+                        mimeType: 'application/json',
+                        text: JSON.stringify(changes, null, 2)
+                    }]
+                };
+            }
+
+            // Handle dynamic resources
+            if (uri.startsWith('file://')) {
+                const path = decodeURIComponent(uri.slice(7));
+                validatePath(path);
+                const content = await this.fileService.readFile(path);
+                return {
+                    contents: [{
+                        uri,
+                        text: content
+                    }]
+                };
+            }
+
+            if (uri.startsWith('metadata://')) {
+                const path = decodeURIComponent(uri.slice(11));
+                validatePath(path);
+                const metadata = await this.fileService.getMetadata(path);
+                return {
+                    contents: [{
+                        uri,
+                        mimeType: 'application/json',
+                        text: JSON.stringify(metadata, null, 2)
+                    }]
+                };
+            }
+
+            if (uri.startsWith('directory://')) {
+                const path = decodeURIComponent(uri.slice(11));
+                validatePath(path);
+                const entries = await this.directoryService.list(path, false);
+                return {
+                    contents: [{
+                        uri,
+                        mimeType: 'application/json',
+                        text: JSON.stringify(entries, null, 2)
+                    }]
+                };
+            }
+
+            throw new McpError(
+                ErrorCode.InvalidRequest,
+                `Invalid resource URI: ${uri}`
+            );
+        });
     }
 
     /**

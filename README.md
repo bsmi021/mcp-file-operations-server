@@ -10,6 +10,10 @@ A Model Context Protocol (MCP) server that provides enhanced file operation capa
 - **Patch Operations**: Apply patches to files with various strategies
 - **Change Tracking**: Track and query file operation history
 - **Streaming Support**: Handle large files efficiently with streaming
+- **Resource Support**: Access files and directories through MCP resources
+- **Progress Reporting**: Real-time progress updates for long operations
+- **Rate Limiting**: Protection against excessive requests
+- **Enhanced Security**: Path validation and input sanitization
 - **Robust Error Handling**: Comprehensive error handling and reporting
 - **Type Safety**: Full TypeScript support with strict type checking
 
@@ -48,25 +52,29 @@ npm run dev
 
 - `make_directory`: Create a directory
 - `remove_directory`: Remove a directory
-- `copy_directory`: Copy a directory recursively
+- `copy_directory`: Copy a directory recursively (with progress reporting)
 
 #### Watch Operations
 
 - `watch_directory`: Start watching a directory for changes
 - `unwatch_directory`: Stop watching a directory
 
-#### Patch Operations
-
-- `apply_patch`: Apply a patch to a file with various strategies:
-  - Line-based patching
-  - Block-based patching
-  - Diff-based patching
-  - Complete file replacement
-
 #### Change Tracking
 
 - `get_changes`: Get the list of recorded changes
 - `clear_changes`: Clear all recorded changes
+
+### Available Resources
+
+#### Static Resources
+
+- `file:///recent-changes`: List of recent file system changes
+
+#### Resource Templates
+
+- `file://{path}`: Access file contents
+- `metadata://{path}`: Access file metadata
+- `directory://{path}`: List directory contents
 
 ### Example Usage
 
@@ -84,21 +92,60 @@ await fileOperations.watchDirectory({
     recursive: true
 });
 
-// Apply a patch
-await fileOperations.applyPatch({
-    operation: {
-        type: 'line',
-        filePath: 'file.txt',
-        search: 'old line',
-        replace: 'new line',
-        createBackup: true,
-        whitespaceConfig: {
-            ignoreIndentation: true,
-            ignoreLineEndings: true
-        }
-    }
+// Access file contents through resource
+const resource = await mcp.readResource('file:///path/to/file.txt');
+console.log(resource.contents[0].text);
+
+// Copy directory with progress tracking
+const result = await fileOperations.copyDirectory({
+    source: './source-dir',
+    destination: './dest-dir',
+    overwrite: false
 });
+// Progress token in result can be used to track progress
+console.log(result.progressToken);
 ```
+
+## Rate Limits
+
+The server implements rate limiting to prevent abuse:
+
+- **Tools**: 100 requests per minute
+- **Resources**: 200 requests per minute
+- **Watch Operations**: 20 operations per minute
+
+Rate limit errors include a retry-after period in the error message.
+
+## Security Features
+
+### Path Validation
+
+All file paths are validated to prevent directory traversal attacks:
+
+- No parent directory references (`../`)
+- Proper path normalization
+- Input sanitization
+
+### Resource Protection
+
+- Rate limiting on all operations
+- Proper error handling and logging
+- Input validation on all parameters
+- Safe resource cleanup
+
+## Progress Reporting
+
+Long-running operations like directory copying provide progress updates:
+
+```typescript
+interface ProgressUpdate {
+    token: string | number;
+    message: string;
+    percentage: number;
+}
+```
+
+Progress can be tracked through the progress token returned in the operation result.
 
 ## Development
 
@@ -130,19 +177,37 @@ npm test
 
 The server can be configured through various settings:
 
-- **Batch Processing**: Control chunk sizes and parallel processing
-- **Whitespace Handling**: Configure indentation and line ending handling
+- **Rate Limiting**: Configure request limits and windows
+- **Progress Reporting**: Control update frequency and detail level
+- **Resource Access**: Configure resource permissions and limits
+- **Security Settings**: Configure path validation rules
 - **Change Tracking**: Set retention periods and storage options
 - **Watch Settings**: Configure debounce times and recursive watching
 
 ## Error Handling
 
-The server provides detailed error information through the `FileOperationError` class, including:
+The server provides detailed error information through the `FileOperationError` class and MCP error codes:
 
-- Error codes for specific failure types
-- Detailed error messages
-- File paths involved in the error
-- Stack traces for debugging
+### Standard MCP Error Codes
+
+- `InvalidRequest`: Invalid parameters or request format
+- `MethodNotFound`: Unknown tool or resource requested
+- `InvalidParams`: Invalid parameters (e.g., path validation failure)
+- `InternalError`: Server-side errors
+
+### Custom Error Types
+
+- File operation failures
+- Rate limit exceeded
+- Path validation errors
+- Resource access errors
+
+Each error includes:
+
+- Specific error code
+- Detailed error message
+- Relevant metadata (file paths, limits, etc.)
+- Stack traces in development mode
 
 ## Contributing
 
