@@ -2,6 +2,10 @@
 
 A Model Context Protocol (MCP) server that provides enhanced file operation capabilities with streaming, patching, and change tracking support.
 
+<a href="https://glama.ai/mcp/servers/7b750si00d">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/7b750si00d/badge" alt="File Operations Server MCP server" />
+</a>
+
 ## Features
 
 - **Basic File Operations**: Copy, read, write, move, and delete files
