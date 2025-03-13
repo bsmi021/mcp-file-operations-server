@@ -1,5 +1,7 @@
 # File Operations MCP Server
 
+[![smithery badge](https://smithery.ai/badge/@bsmi021/mcp-file-operations-server)](https://smithery.ai/server/@bsmi021/mcp-file-operations-server)
+
 A Model Context Protocol (MCP) server that provides enhanced file operation capabilities with streaming, patching, and change tracking support.
 
 ## Features
@@ -18,6 +20,15 @@ A Model Context Protocol (MCP) server that provides enhanced file operation capa
 
 ## Installation
 
+### Installing via Smithery
+
+To install File Operations Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@bsmi021/mcp-file-operations-server):
+
+```bash
+npx -y @smithery/cli install @bsmi021/mcp-file-operations-server --client claude
+```
+
+### Manual Installation
 ```bash
 npm install
 ```
