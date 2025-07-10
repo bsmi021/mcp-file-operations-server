@@ -15,12 +15,14 @@ A Model Context Protocol (MCP) server that provides enhanced file operation capa
 - **File Watching**: Monitor files and directories for changes
 - **Change Tracking**: Track and query file operation history
 - **Streaming Support**: Handle large files efficiently with streaming
+- **HTTP Interface**: Streamable HTTP interface with Server-Sent Events (SSE)
 - **Resource Support**: Access files and directories through MCP resources
 - **Progress Reporting**: Real-time progress updates for long operations
 - **Rate Limiting**: Protection against excessive requests
 - **Enhanced Security**: Path validation and input sanitization
 - **Robust Error Handling**: Comprehensive error handling and reporting
 - **Type Safety**: Full TypeScript support with strict type checking
+- **Docker Support**: Containerized deployment with volume mounting
 
 ## Installation
 
@@ -37,18 +39,68 @@ npx -y @smithery/cli install @bsmi021/mcp-file-operations-server --client claude
 npm install
 ```
 
+### Docker Installation
+
+See [DOCKER.md](./DOCKER.md) for comprehensive Docker setup instructions including local drive mounting for Windows and Linux.
+
+**Quick Docker Start:**
+```bash
+# Stdio transport (for MCP clients)
+docker run -it --rm -v "$(pwd):/workspace" ghcr.io/bsmi021/mcp-file-operations-server
+
+# HTTP transport (for web/remote access)
+docker run -it --rm -p 3001:3001 -v "$(pwd):/workspace" -e MCP_TRANSPORT=http ghcr.io/bsmi021/mcp-file-operations-server
+```
+
 ## Usage
 
-### Starting the Server
+### Transport Modes
+
+The server supports two transport modes:
+
+#### 1. Stdio Transport (Default)
+For direct integration with MCP clients like Claude Desktop:
 
 ```bash
 npm start
 ```
 
-For development with auto-reloading:
+#### 2. HTTP Transport with SSE (New in v1.5)
+For remote connections and web applications:
 
 ```bash
+npm run start:http
+```
+
+The HTTP server provides:
+- **SSE Endpoint**: `GET http://localhost:3001/sse` - Establishes streaming connection
+- **Messages Endpoint**: `POST http://localhost:3001/messages` - Receives client messages  
+- **Health Check**: `GET http://localhost:3001/health` - Server status
+- **Sessions**: `GET http://localhost:3001/sessions` - Active connection info
+
+### Starting the Server
+
+#### Development Mode
+
+```bash
+# Stdio transport with auto-reload
 npm run dev
+
+# HTTP transport with auto-reload
+npm run dev:http
+```
+
+#### Production Mode
+
+```bash
+# Stdio transport
+npm start
+
+# HTTP transport
+npm run start:http
+
+# Custom port for HTTP
+npm run start:http -- --port 8080
 ```
 
 ### Available Tools
@@ -92,6 +144,8 @@ npm run dev
 
 ### Example Usage
 
+#### Using Stdio Transport (MCP Clients)
+
 ```typescript
 // Copy a file
 await fileOperations.copyFile({
@@ -119,6 +173,121 @@ const result = await fileOperations.copyDirectory({
 // Progress token in result can be used to track progress
 console.log(result.progressToken);
 ```
+
+#### Using HTTP Transport (Web/Remote)
+
+**Connecting via JavaScript:**
+
+```javascript
+// Establish SSE connection
+const eventSource = new EventSource('http://localhost:3001/sse');
+let sessionId = null;
+
+eventSource.onopen = function() {
+    console.log('Connected to MCP server');
+};
+
+eventSource.onmessage = function(event) {
+    const message = JSON.parse(event.data);
+    
+    // Extract session ID from first message
+    if (!sessionId && message.sessionId) {
+        sessionId = message.sessionId;
+    }
+    
+    console.log('Received:', message);
+};
+
+// Send a message to the server
+async function sendMessage(method, params) {
+    const message = {
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: method,
+        params: params
+    };
+    
+    const response = await fetch('http://localhost:3001/messages', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Session-ID': sessionId
+        },
+        body: JSON.stringify(message)
+    });
+    
+    return response.json();
+}
+
+// Example: List tools
+sendMessage('tools/list', {});
+
+// Example: Read a file
+sendMessage('tools/call', {
+    name: 'read_file',
+    arguments: { path: '/workspace/example.txt' }
+});
+```
+
+**Using curl for testing:**
+
+```bash
+# Start SSE connection in background
+curl -N http://localhost:3001/sse &
+
+# Check server health
+curl http://localhost:3001/health
+
+# List active sessions
+curl http://localhost:3001/sessions
+```
+
+**Interactive Web Client:**
+
+A complete interactive example is available at [`examples/http-client.html`](./examples/http-client.html). Open this file in a web browser to test the HTTP interface with a user-friendly GUI.
+
+## What's New in v1.5
+
+### MCP SDK v1.5 Upgrade
+- **Streamable HTTP Interface**: New HTTP transport with Server-Sent Events (SSE)
+- **Enhanced API**: Upgraded to MCP SDK v1.5 with improved zod-based schemas
+- **Multiple Connections**: Support for simultaneous HTTP connections with session management
+- **Better Type Safety**: Improved TypeScript integration and error handling
+
+### Streaming Features
+- **Large File Support**: Efficient streaming for large file operations
+- **Real-time Progress**: Progress updates via SSE for long-running operations
+- **Session Management**: Multiple client connections with isolated sessions
+- **HTTP API**: RESTful endpoints alongside traditional MCP protocol
+
+## Docker Support
+
+### Quick Start with Docker
+
+```bash
+# Build the image
+docker build -t mcp-file-operations-server .
+
+# Run with stdio (for MCP clients)
+docker run -it --rm -v "$(pwd):/workspace" mcp-file-operations-server
+
+# Run with HTTP interface
+docker run -it --rm -p 3001:3001 -v "$(pwd):/workspace" -e MCP_TRANSPORT=http mcp-file-operations-server
+```
+
+### Volume Mounting
+
+**Windows:**
+```cmd
+docker run -it --rm -v "C:\MyProject:/workspace" -p 3001:3001 -e MCP_TRANSPORT=http mcp-file-operations-server
+```
+
+**Linux/macOS:**
+```bash
+docker run -it --rm -v "/home/user/project:/workspace" -p 3001:3001 -e MCP_TRANSPORT=http mcp-file-operations-server
+```
+
+For comprehensive Docker setup instructions including local drive mounting for Windows and Linux, see [DOCKER.md](./DOCKER.md).
 
 ## Rate Limits
 
@@ -188,6 +357,18 @@ npm test
 ```
 
 ## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
+| `MCP_HTTP_PORT` | `3001` | Port for HTTP transport |
+
+### Transport Selection
+
+- **Stdio**: Best for MCP clients like Claude Desktop, direct integration
+- **HTTP**: Best for web applications, remote access, development/testing
 
 The server can be configured through various settings:
 
