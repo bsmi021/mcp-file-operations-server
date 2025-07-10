@@ -16,7 +16,16 @@ COPY . .
 # Build the project
 RUN npm run build
 
-# Expose any required port if needed (not explicitly required by MCP)
+# Expose HTTP port for streaming interface (3001 by default)
+EXPOSE 3001
 
-# Start the server
-CMD [ "npm", "start" ]
+# Add environment variables for configuration
+ENV MCP_TRANSPORT=stdio
+ENV MCP_HTTP_PORT=3001
+
+# Create a startup script that handles both transports
+RUN echo '#!/bin/sh\nif [ "$MCP_TRANSPORT" = "http" ]; then\n  exec npm run start:http\nelse\n  exec npm start\nfi' > /app/start.sh && \
+    chmod +x /app/start.sh
+
+# Use the startup script as the default command
+CMD [ "/app/start.sh" ]
