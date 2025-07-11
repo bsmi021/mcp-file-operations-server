@@ -11,6 +11,7 @@ A Model Context Protocol (MCP) server that provides enhanced file operation capa
 ## Features
 
 - **Basic File Operations**: Copy, read, write, move, and delete files
+- **Batch File Operations**: Read and write multiple files in single operations for improved efficiency
 - **Directory Operations**: Create, remove, and copy directories
 - **File Watching**: Monitor files and directories for changes
 - **Change Tracking**: Track and query file operation history
@@ -109,7 +110,9 @@ npm run start:http -- --port 8080
 
 - `copy_file`: Copy a file to a new location
 - `read_file`: Read content from a file
+- `read_many_files`: Read content from multiple files in a single request
 - `write_file`: Write content to a file
+- `write_many_files`: Write content to multiple files in a single request
 - `move_file`: Move/rename a file
 - `delete_file`: Delete a file
 - `append_file`: Append content to a file
@@ -152,6 +155,19 @@ await fileOperations.copyFile({
     source: 'source.txt',
     destination: 'destination.txt',
     overwrite: false
+});
+
+// Read multiple files at once (batch operation)
+await fileOperations.readManyFiles({
+    paths: ['file1.txt', 'file2.txt', 'file3.txt']
+});
+
+// Write multiple files at once (batch operation)
+await fileOperations.writeManyFiles({
+    files: [
+        { path: 'output1.txt', content: 'Content for file 1' },
+        { path: 'output2.txt', content: 'Content for file 2' }
+    ]
 });
 
 // Watch a directory
@@ -226,6 +242,25 @@ sendMessage('tools/list', {});
 sendMessage('tools/call', {
     name: 'read_file',
     arguments: { path: '/workspace/example.txt' }
+});
+
+// Example: Read multiple files
+sendMessage('tools/call', {
+    name: 'read_many_files',
+    arguments: { 
+        paths: ['/workspace/file1.txt', '/workspace/file2.txt'] 
+    }
+});
+
+// Example: Write multiple files  
+sendMessage('tools/call', {
+    name: 'write_many_files',
+    arguments: { 
+        files: [
+            { path: '/workspace/output1.txt', content: 'Content 1' },
+            { path: '/workspace/output2.txt', content: 'Content 2' }
+        ]
+    }
 });
 ```
 
