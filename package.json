@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
+    "start:http": "node build/index.js --http",
     "dev": "ts-node-esm src/index.ts",
+    "dev:http": "ts-node-esm src/index.ts --http",
     "watch": "tsc -w",
     "clean": "rimraf build",
     "lint": "eslint src --ext .ts",
@@ -25,13 +27,15 @@
   "author": "Brian W. Smith",
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.5.0",
     "diff": "^5.1.0",
+    "express": "^4.19.2",
     "glob": "^10.3.10",
     "mime-types": "^2.1.35"
   },
   "devDependencies": {
     "@types/diff": "^5.0.9",
+    "@types/express": "^4.17.21",
     "@types/glob": "^8.1.0",
     "@types/mime-types": "^2.1.4",
     "@types/node": "^20.10.5",

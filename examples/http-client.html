@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP File Operations Server - HTTP Client Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.connected { background-color: #d4edda; color: #155724; }
+        .status.disconnected { background-color: #f8d7da; color: #721c24; }
+        .status.connecting { background-color: #fff3cd; color: #856404; }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 5px 0;
+        }
+        .log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            border-radius: 4px;
+            height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) { .tools { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <h1>MCP File Operations Server - HTTP Client Example</h1>
+    
+    <div class="container">
+        <h2>Connection</h2>
+        <div>
+            <label>Server URL:</label>
+            <input type="text" id="serverUrl" value="http://localhost:3001" placeholder="http://localhost:3001">
+        </div>
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+        <button onclick="checkHealth()">Check Health</button>
+        <div id="connectionStatus" class="status disconnected">Disconnected</div>
+    </div>
+
+    <div class="tools">
+        <div class="container">
+            <h2>File Operations</h2>
+            
+            <h3>Read File</h3>
+            <input type="text" id="readPath" placeholder="File path (e.g., /workspace/example.txt)">
+            <button onclick="readFile()">Read File</button>
+            
+            <h3>Write File</h3>
+            <input type="text" id="writePath" placeholder="File path">
+            <textarea id="writeContent" placeholder="File content" rows="3"></textarea>
+            <button onclick="writeFile()">Write File</button>
+            
+            <h3>List Directory</h3>
+            <input type="text" id="listPath" placeholder="Directory path (e.g., /workspace)">
+            <label><input type="checkbox" id="listRecursive"> Recursive</label>
+            <button onclick="listDirectory()">List Directory</button>
+        </div>
+
+        <div class="container">
+            <h2>Server Information</h2>
+            <button onclick="listTools()">List Tools</button>
+            <button onclick="listResources()">List Resources</button>
+            <button onclick="getChanges()">Get Changes</button>
+            <button onclick="getSessions()">Get Sessions</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Communication Log</h2>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let sessionId = null;
+        let messageId = 1;
+
+        function log(message, type = 'info') {
+            const timestamp = new Date().toISOString();
+            const logDiv = document.getElementById('log');
+            const prefix = type === 'error' ? '❌' : type === 'sent' ? '📤' : type === 'received' ? '📥' : 'ℹ️';
+            logDiv.textContent += `[${timestamp}] ${prefix} ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateStatus(status, className) {
+            const statusDiv = document.getElementById('connectionStatus');
+            statusDiv.textContent = status;
+            statusDiv.className = `status ${className}`;
+        }
+
+        async function connect() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            updateStatus('Connecting...', 'connecting');
+            log(`Connecting to ${serverUrl}/sse`);
+
+            try {
+                eventSource = new EventSource(`${serverUrl}/sse`);
+                
+                eventSource.onopen = function() {
+                    updateStatus('Connected', 'connected');
+                    log('SSE connection established');
+                };
+
+                eventSource.onmessage = function(event) {
+                    log(`Received: ${event.data}`, 'received');
+                    
+                    try {
+                        const message = JSON.parse(event.data);
+                        
+                        // Extract session ID from server messages
+                        if (message.sessionId && !sessionId) {
+                            sessionId = message.sessionId;
+                            log(`Session ID: ${sessionId}`);
+                        }
+                    } catch (e) {
+                        // Ignore parsing errors for non-JSON messages
+                    }
+                };
+
+                eventSource.onerror = function(error) {
+                    updateStatus('Connection Error', 'disconnected');
+                    log(`Connection error: ${error}`, 'error');
+                };
+
+            } catch (error) {
+                updateStatus('Failed to Connect', 'disconnected');
+                log(`Failed to connect: ${error}`, 'error');
+            }
+        }
+
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            sessionId = null;
+            updateStatus('Disconnected', 'disconnected');
+            log('Disconnected');
+        }
+
+        async function sendMessage(method, params = {}) {
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            if (!sessionId) {
+                log('No active session. Please connect first.', 'error');
+                return;
+            }
+
+            const message = {
+                jsonrpc: '2.0',
+                id: messageId++,
+                method: method,
+                params: params
+            };
+
+            log(`Sending: ${JSON.stringify(message)}`, 'sent');
+
+            try {
+                const response = await fetch(`${serverUrl}/messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Session-ID': sessionId
+                    },
+                    body: JSON.stringify(message)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                log(`Response: ${JSON.stringify(result)}`, 'received');
+                return result;
+            } catch (error) {
+                log(`Error sending message: ${error}`, 'error');
+            }
+        }
+
+        async function checkHealth() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            try {
+                const response = await fetch(`${serverUrl}/health`);
+                const health = await response.json();
+                log(`Health check: ${JSON.stringify(health)}`);
+            } catch (error) {
+                log(`Health check failed: ${error}`, 'error');
+            }
+        }
+
+        async function getSessions() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            try {
+                const response = await fetch(`${serverUrl}/sessions`);
+                const sessions = await response.json();
+                log(`Sessions: ${JSON.stringify(sessions)}`);
+            } catch (error) {
+                log(`Failed to get sessions: ${error}`, 'error');
+            }
+        }
+
+        // MCP Protocol methods
+        async function listTools() {
+            await sendMessage('tools/list');
+        }
+
+        async function listResources() {
+            await sendMessage('resources/list');
+        }
+
+        async function getChanges() {
+            await sendMessage('tools/call', {
+                name: 'get_changes',
+                arguments: {}
+            });
+        }
+
+        // File operations
+        async function readFile() {
+            const path = document.getElementById('readPath').value;
+            if (!path) {
+                log('Please enter a file path', 'error');
+                return;
+            }
+
+            await sendMessage('tools/call', {
+                name: 'read_file',
+                arguments: { path: path }
+            });
+        }
+
+        async function writeFile() {
+            const path = document.getElementById('writePath').value;
+            const content = document.getElementById('writeContent').value;
+            
+            if (!path || !content) {
+                log('Please enter both path and content', 'error');
+                return;
+            }
+
+            await sendMessage('tools/call', {
+                name: 'write_file',
+                arguments: { path: path, content: content }
+            });
+        }
+
+        async function listDirectory() {
+            const path = document.getElementById('listPath').value;
+            const recursive = document.getElementById('listRecursive').checked;
+            
+            if (!path) {
+                log('Please enter a directory path', 'error');
+                return;
+            }
+
+            await sendMessage('tools/call', {
+                name: 'list_directory',
+                arguments: { path: path, recursive: recursive }
+            });
+        }
+
+        function clearLog() {
+            document.getElementById('log').textContent = '';
+        }
+
+        // Initialize with some helpful information
+        window.onload = function() {
+            log('MCP File Operations Server HTTP Client');
+            log('1. Start the server with: npm run start:http');
+            log('2. Click "Connect" to establish SSE connection');
+            log('3. Use the tools to interact with the file system');
+            log('4. Check the Docker documentation for volume mounting');
+            log('');
+        };
+    </script>
+</body>
+</html>
