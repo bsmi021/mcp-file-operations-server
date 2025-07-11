@@ -195,6 +195,17 @@ export interface FileService {
     deleteFile(path: string): Promise<void>;
     exists(path: string): Promise<boolean>;
     getMetadata(path: string): Promise<FileMetadata>;
+    readManyFiles(filePaths: string[], encoding?: string): Promise<Array<{
+        path: string;
+        success: boolean;
+        content?: string;
+        error?: string;
+    }>>;
+    writeManyFiles(files: Array<{ path: string; content: string }>, encoding?: string): Promise<Array<{
+        path: string;
+        success: boolean;
+        error?: string;
+    }>>;
 }
 
 export interface DirectoryService {

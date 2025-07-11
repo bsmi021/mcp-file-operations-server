@@ -194,4 +194,69 @@ export class FileServiceImpl implements FileService {
             );
         }
     }
+
+    /**
+     * Read multiple files in a single operation
+     * @param filePaths Array of file paths to read
+     * @param encoding File encoding (defaults to utf8)
+     * @returns Array of file read results with success/error status
+     */
+    async readManyFiles(filePaths: string[], encoding: BufferEncoding = FILE_OPERATION_DEFAULTS.encoding): Promise<Array<{
+        path: string;
+        success: boolean;
+        content?: string;
+        error?: string;
+    }>> {
+        const results = await Promise.allSettled(
+            filePaths.map(async (filePath) => {
+                const content = await this.readFile(filePath, encoding);
+                return { path: filePath, success: true, content };
+            })
+        );
+
+        return results.map((result, index) => {
+            const filePath = filePaths[index];
+            if (result.status === 'fulfilled') {
+                return result.value;
+            } else {
+                return {
+                    path: filePath,
+                    success: false,
+                    error: result.reason instanceof Error ? result.reason.message : 'Unknown error'
+                };
+            }
+        });
+    }
+
+    /**
+     * Write multiple files in a single operation
+     * @param files Array of file objects with path and content
+     * @param encoding File encoding (defaults to utf8)
+     * @returns Array of file write results with success/error status
+     */
+    async writeManyFiles(files: Array<{ path: string; content: string }>, encoding: BufferEncoding = FILE_OPERATION_DEFAULTS.encoding): Promise<Array<{
+        path: string;
+        success: boolean;
+        error?: string;
+    }>> {
+        const results = await Promise.allSettled(
+            files.map(async (file) => {
+                await this.writeFile(file.path, file.content, encoding);
+                return { path: file.path, success: true };
+            })
+        );
+
+        return results.map((result, index) => {
+            const filePath = files[index].path;
+            if (result.status === 'fulfilled') {
+                return result.value;
+            } else {
+                return {
+                    path: filePath,
+                    success: false,
+                    error: result.reason instanceof Error ? result.reason.message : 'Unknown error'
+                };
+            }
+        });
+    }
 }

@@ -188,6 +188,40 @@ export class FileOperationsServer {
         );
 
         this.mcpServer.tool(
+            'read_many_files',
+            {
+                paths: z.array(z.string()).describe('Array of file paths to read'),
+                encoding: z.string().default('utf8').describe('File encoding (default: utf8)')
+            },
+            async ({ paths, encoding }) => {
+                this.rateLimiter.checkRateLimit('tool');
+                
+                // Validate all paths
+                for (const path of paths) {
+                    validatePath(path);
+                }
+                
+                // Apply rate limiting based on number of files (treat as multiple operations)
+                for (let i = 0; i < paths.length - 1; i++) {
+                    this.rateLimiter.checkRateLimit('tool');
+                }
+                
+                const results = await this.fileService.readManyFiles(paths, encoding as BufferEncoding);
+                
+                // Track successful reads
+                for (const result of results) {
+                    if (result.success) {
+                        await trackChange('Read file (batch)', 'file_edit', { path: result.path });
+                    }
+                }
+                
+                return {
+                    content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
+                };
+            }
+        );
+
+        this.mcpServer.tool(
             'write_file',
             {
                 path: z.string().describe('Path to write the file to'),
@@ -204,6 +238,59 @@ export class FileOperationsServer {
                 
                 return {
                     content: [{ type: 'text', text: JSON.stringify(metadata, null, 2) }]
+                };
+            }
+        );
+
+        this.mcpServer.tool(
+            'write_many_files',
+            {
+                files: z.array(z.object({
+                    path: z.string().describe('Path to write the file to'),
+                    content: z.string().describe('Content to write to the file')
+                })).describe('Array of file objects with path and content'),
+                encoding: z.string().default('utf8').describe('File encoding (default: utf8)')
+            },
+            async ({ files, encoding }) => {
+                this.rateLimiter.checkRateLimit('tool');
+                
+                // Validate all paths
+                for (const file of files) {
+                    validatePath(file.path);
+                }
+                
+                // Apply rate limiting based on number of files (treat as multiple operations)
+                for (let i = 0; i < files.length - 1; i++) {
+                    this.rateLimiter.checkRateLimit('tool');
+                }
+                
+                const results = await this.fileService.writeManyFiles(files, encoding as BufferEncoding);
+                
+                // Track successful writes and collect metadata
+                const metadata: any[] = [];
+                for (const result of results) {
+                    if (result.success) {
+                        await trackChange('Wrote file (batch)', 'file_edit', { path: result.path });
+                        try {
+                            const fileMetadata = await this.fileService.getMetadata(result.path);
+                            metadata.push({ path: result.path, metadata: fileMetadata });
+                        } catch (error) {
+                            // Metadata retrieval failed, but file write succeeded
+                            metadata.push({ path: result.path, error: 'Failed to retrieve metadata' });
+                        }
+                    }
+                }
+                
+                return {
+                    content: [{ type: 'text', text: JSON.stringify({ 
+                        results, 
+                        metadata,
+                        summary: {
+                            total: files.length,
+                            successful: results.filter(r => r.success).length,
+                            failed: results.filter(r => !r.success).length
+                        }
+                    }, null, 2) }]
                 };
             }
         );
